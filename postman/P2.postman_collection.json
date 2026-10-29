@@ -1,0 +1,335 @@
+{
+  "info": {
+    "name": "产品溯源系统 - P2 后台核心 API 与安全组件",
+    "description": "阶段二：产品 CRUD、普通码、一物一码异步批量生成、CSV 导出、防伪验证与 31 次连击限流测试。执行前请先启动 Redis/MySQL 与后端服务。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8080/api" },
+    { "key": "productId", "value": "1" },
+    { "key": "normalCode", "value": "" },
+    { "key": "taskId", "value": "" },
+    { "key": "verifyCode", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "1. 创建产品（自动写入 productId）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "pm.test('创建成功', () => pm.expect(json.code).to.eql(200));",
+              "if (json.data && json.data.id) {",
+              "  pm.collectionVariables.set('productId', json.data.id);",
+              "  console.log('productId =', json.data.id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productNo\": \"P{{$timestamp}}\",\n  \"productName\": \"有机山茶油 500ml\",\n  \"category\": \"食用油\",\n  \"brand\": \"山之语\",\n  \"coverImage\": \"https://example.com/cover.jpg\",\n  \"imageList\": \"[\\\"https://example.com/1.jpg\\\",\\\"https://example.com/2.jpg\\\"]\",\n  \"videoUrl\": \"\",\n  \"description\": \"<h2>产品介绍</h2><p>精选高山茶籽，冷压初榨。</p><img src=\\\"https://example.com/detail.jpg\\\"/>\",\n  \"origin\": \"江西·婺源\",\n  \"spec\": \"500ml/瓶\",\n  \"shelfStatus\": 1,\n  \"sortOrder\": 100\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/admin/product",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "product"]
+        }
+      }
+    },
+    {
+      "name": "2. 编辑产品",
+      "request": {
+        "method": "PUT",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id\": {{productId}},\n  \"productNo\": \"P{{$timestamp}}\",\n  \"productName\": \"有机山茶油 500ml（升级版）\",\n  \"category\": \"食用油\",\n  \"brand\": \"山之语\",\n  \"coverImage\": \"https://example.com/cover.jpg\",\n  \"imageList\": \"[]\",\n  \"description\": \"<h2>产品介绍</h2><p>冷压初榨，富含角鲨烯。</p>\",\n  \"origin\": \"江西·婺源\",\n  \"spec\": \"500ml/瓶\",\n  \"shelfStatus\": 1,\n  \"sortOrder\": 120\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/admin/product",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "product"]
+        }
+      }
+    },
+    {
+      "name": "3. 产品详情",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/admin/product/{{productId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "product", "{{productId}}"]
+        }
+      }
+    },
+    {
+      "name": "4. 产品分页",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/admin/product/page?current=1&size=10&keyword=山茶油",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "product", "page"],
+          "query": [
+            { "key": "current", "value": "1" },
+            { "key": "size", "value": "10" },
+            { "key": "keyword", "value": "山茶油" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "5. 上传富文本配图（可选）",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            { "key": "dir", "value": "product/detail", "type": "text" },
+            { "key": "file", "type": "file", "src": "" }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/admin/media/image",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "media", "image"]
+        }
+      }
+    },
+    {
+      "name": "6. 生成普通产品码（微信小程序码）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "pm.test('生成成功', () => pm.expect(json.code).to.eql(200));",
+              "if (json.data && json.data.code) {",
+              "  pm.collectionVariables.set('normalCode', json.data.code);",
+              "  console.log('normalCode =', json.data.code);",
+              "  console.log('qrImageUrl =', json.data.qrImageUrl);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/admin/code/normal/{{productId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "code", "normal", "{{productId}}"]
+        }
+      }
+    },
+    {
+      "name": "7. 一物一码批量生成（异步）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "pm.test('任务已受理', () => pm.expect(json.code).to.eql(200));",
+              "if (json.data && json.data.taskId) {",
+              "  pm.collectionVariables.set('taskId', json.data.taskId);",
+              "  console.log('taskId =', json.data.taskId);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productId\": {{productId}},\n  \"count\": 10,\n  \"batchNo\": \"\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/admin/code/batch",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "code", "batch"]
+        }
+      }
+    },
+    {
+      "name": "8. 查询批量进度（自动取测试码）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "pm.test('查询成功', () => pm.expect(json.code).to.eql(200));",
+              "if (json.data) {",
+              "  console.log('status =', json.data.status, 'generated =', json.data.generated, '/', json.data.total);",
+              "  if (json.data.sampleCodes && json.data.sampleCodes.length > 0) {",
+              "    pm.collectionVariables.set('verifyCode', json.data.sampleCodes[0]);",
+              "    console.log('verifyCode =', json.data.sampleCodes[0]);",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/admin/code/batch/{{taskId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "code", "batch", "{{taskId}}"]
+        }
+      }
+    },
+    {
+      "name": "9. 下载一物一码 CSV",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/admin/code/batch/{{taskId}}/download",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "code", "batch", "{{taskId}}", "download"]
+        }
+      }
+    },
+    {
+      "name": "10. 防伪验证 - 单次",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/verify/{{verifyCode}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["verify", "{{verifyCode}}"]
+        }
+      }
+    },
+    {
+      "name": "11. 防伪预警 - 同一码连续验证 4 次（第 4 次应为 1004）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const url = pm.variables.replaceIn('{{baseUrl}}/verify/{{verifyCode}}');",
+              "let sent = 0;",
+              "const bodies = [];",
+              "function fire() {",
+              "  if (sent >= 4) {",
+              "    console.log('4 次返回业务码:', bodies);",
+              "    pm.test('出现假货预警 1004', () => pm.expect(bodies).to.include(1004));",
+              "    return;",
+              "  }",
+              "  sent++;",
+              "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
+              "    if (!err) { bodies.push(res.json().code); }",
+              "    fire();",
+              "  });",
+              "}",
+              "fire();"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "12. 限流必测：同一 IP 连续 31 次防伪验证（第 31 次必须 429）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// 若刚执行过其它验证请求，请等待 60 秒或执行：",
+              "// redis-cli DEL rate:verify:ip:127.0.0.1",
+              "const url = pm.variables.replaceIn('{{baseUrl}}/verify/{{verifyCode}}');",
+              "const statuses = [];",
+              "function fire() {",
+              "  if (statuses.length >= 31) {",
+              "    console.log('31 次 HTTP 状态:', JSON.stringify(statuses));",
+              "    pm.test('请求总数 31', () => pm.expect(statuses.length).to.eql(31));",
+              "    pm.test('最后一次返回 429', () => pm.expect(statuses[30]).to.eql(429));",
+              "    pm.test('出现 429 限流', () => pm.expect(statuses).to.include(429));",
+              "    return;",
+              "  }",
+              "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
+              "    statuses.push(err ? -1 : res.code);",
+              "    fire();",
+              "  });",
+              "}",
+              "fire();"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "13. 限流单请求（用 Runner 迭代 31 次）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "console.log('HTTP 状态:', pm.response.code);",
+              "if (pm.response.code === 429) {",
+              "  pm.test('触发限流', () => {",
+              "    pm.expect(pm.response.json().code).to.eql(429);",
+              "    pm.expect(pm.response.headers.get('Retry-After')).to.exist;",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/verify/{{verifyCode}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["verify", "{{verifyCode}}"]
+        }
+      }
+    }
+  ]
+}

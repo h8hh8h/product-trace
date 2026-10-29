@@ -1,0 +1,35 @@
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/product_trace?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: root
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      password: ""
+      database: 0
+      timeout: 5000
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+
+media:
+  storage:
+    type: local
+    local:
+      root-path: ./upload
+      url-prefix: http://127.0.0.1:8080/api/media
+
+# 公众号 H5 微信分享：未配置时 /wx/jssdk-config 会返回明确提示，不影响 H5 浏览
+wx:
+  mp:
+    app-id: ""
+    app-secret: ""
+
+trace:
+  h5:
+    scan-base-url: http://127.0.0.1:5173/scan

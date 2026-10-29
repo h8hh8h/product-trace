@@ -1,0 +1,90 @@
+{
+  "info": {
+    "name": "产品溯源系统 - P1 基础设施测试",
+    "description": "P1 阶段：工程骨架、策略模式、Lua 限流、健康检查",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8080/api" }
+  ],
+  "item": [
+    {
+      "name": "1. 健康检查",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "1.1 数据库建表检查（应全部 OK）",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health/db",
+          "host": ["{{baseUrl}}"],
+          "path": ["health", "db"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "2. 限流演示 - 第1次（应成功）",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health/rate-limit-demo",
+          "host": ["{{baseUrl}}"],
+          "path": ["health", "rate-limit-demo"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "3. 限流演示 - 第2次（应成功）",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health/rate-limit-demo",
+          "host": ["{{baseUrl}}"],
+          "path": ["health", "rate-limit-demo"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "4. 限流演示 - 第3次（应成功）",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health/rate-limit-demo",
+          "host": ["{{baseUrl}}"],
+          "path": ["health", "rate-limit-demo"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "5. 限流演示 - 第4次（应返回429被限流）",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health/rate-limit-demo",
+          "host": ["{{baseUrl}}"],
+          "path": ["health", "rate-limit-demo"]
+        }
+      },
+      "response": []
+    }
+  ]
+}

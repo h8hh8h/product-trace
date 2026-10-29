@@ -1,0 +1,148 @@
+{
+  "info": {
+    "name": "产品溯源系统 - P4 部署与 Nginx 配置验证",
+    "description": "阶段四（第一部分）：验证宝塔 Nginx 反向代理、CORS、图片 WebP 协商、视频防盗链与 Range 分片。\n\n使用前：\n1. 把 apiBase 改为你的 API 域名（经 Nginx，不要直连 8080）；h5Origin 改为 H5 域名。\n2. imageUrl / videoUrl 替换为服务器上真实存在的文件地址。\n3. 视频防盗链用例的 Referer 为外部站点，预期 403。\n4. 图片用例的 Accept 为 image/webp，若已生成 .webp 应返回 image/webp，否则回退原图。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "apiBase", "value": "https://api.yourdomain.com/api" },
+    { "key": "h5Origin", "value": "https://h5.yourdomain.com" },
+    { "key": "imageUrl", "value": "https://api.yourdomain.com/uploads/images/2026/10/21/sample.jpg" },
+    { "key": "videoUrl", "value": "https://api.yourdomain.com/uploads/videos/2026/10/21/sample.mp4" }
+  ],
+  "item": [
+    {
+      "name": "1. 反向代理 - 健康检查",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "pm.test('Nginx 转发成功，HTTP 200', () => pm.expect(pm.response.code).to.eql(200));",
+              "pm.test('业务码 200', () => pm.expect(json.code).to.eql(200));",
+              "pm.test('服务状态 UP', () => pm.expect(json.data.status).to.eql('UP'));",
+              "pm.test('媒体策略为 local', () => pm.expect(json.data.mediaStorageType).to.eql('local'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{apiBase}}/health",
+          "host": ["{{apiBase}}"],
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "2. CORS - 预检请求（OPTIONS）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const h5 = pm.variables.get('h5Origin');",
+              "pm.test('预检返回 204', () => pm.expect(pm.response.code).to.eql(204));",
+              "pm.test('允许来源为 H5 域名', () => pm.expect(pm.response.headers.get('Access-Control-Allow-Origin')).to.eql(h5));",
+              "pm.test('允许方法包含 POST/PUT', () => {",
+              "  const methods = pm.response.headers.get('Access-Control-Allow-Methods') || '';",
+              "  pm.expect(methods).to.include('POST');",
+              "  pm.expect(methods).to.include('PUT');",
+              "});",
+              "pm.test('预检缓存时间已返回', () => pm.expect(pm.response.headers.get('Access-Control-Max-Age')).to.not.be.null);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "OPTIONS",
+        "header": [
+          { "key": "Origin", "value": "{{h5Origin}}" },
+          { "key": "Access-Control-Request-Method", "value": "GET" },
+          { "key": "Access-Control-Request-Headers", "value": "content-type" }
+        ],
+        "url": {
+          "raw": "{{apiBase}}/verify/test",
+          "host": ["{{apiBase}}"],
+          "path": ["verify", "test"]
+        }
+      }
+    },
+    {
+      "name": "3. 图片 - WebP 协商与缓存头",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('图片可访问（404 请先替换 imageUrl）', () => pm.expect(pm.response.code, '请上传测试图片并修改 imageUrl 变量').to.eql(200));",
+              "const type = (pm.response.headers.get('Content-Type') || '').toLowerCase();",
+              "pm.test('返回图片类型', () => pm.expect(type).to.match(/image\\/(webp|jpeg|png)/));",
+              "pm.test('包含 Vary: Accept', () => {",
+              "  const vary = (pm.response.headers.get('Vary') || '').toLowerCase();",
+              "  pm.expect(vary).to.include('accept');",
+              "});",
+              "pm.test('已设置浏览器缓存', () => pm.expect(pm.response.headers.get('Cache-Control')).to.not.be.null);",
+              "console.log('图片 Content-Type =', type);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Accept", "value": "image/webp,image/*,*/*;q=0.8" }],
+        "url": "{{imageUrl}}"
+      }
+    },
+    {
+      "name": "4. 视频 - Range 分片（可拖动进度条）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('视频支持 Range（404 请先替换 videoUrl）', () => pm.expect(pm.response.code, '请上传测试视频并修改 videoUrl 变量').to.eql(206));",
+              "pm.test('返回 Content-Range', () => pm.expect(pm.response.headers.get('Content-Range')).to.not.be.null);",
+              "pm.test('内容类型为视频', () => {",
+              "  const type = (pm.response.headers.get('Content-Type') || '').toLowerCase();",
+              "  pm.expect(type).to.include('video/');",
+              "});",
+              "pm.test('Accept-Ranges=bytes', () => pm.expect(pm.response.headers.get('Accept-Ranges')).to.eql('bytes'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Range", "value": "bytes=0-1023" }],
+        "url": "{{videoUrl}}"
+      }
+    },
+    {
+      "name": "5. 视频 - 盗链来源应 403",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('外部 Referer 被拒绝（403）', () => pm.expect(pm.response.code).to.eql(403));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Referer", "value": "https://evil.example.com/hotlink" }],
+        "url": "{{videoUrl}}"
+      }
+    }
+  ]
+}

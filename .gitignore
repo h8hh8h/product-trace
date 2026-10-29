@@ -1,0 +1,70 @@
+HELP.md
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### Eclipse / STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+
+### VS Code ###
+.vscode/
+
+### OS ###
+.DS_Store
+Thumbs.db
+
+### Logs ###
+*.log
+logs/
+
+### Upload ###
+upload/
+
+### ===== 前端构建产物与依赖 =====
+node_modules/
+**/node_modules/
+admin-web/dist/
+frontend-uniapp/dist/
+frontend-uniapp/unpackage/
+.hbuilderx/
+
+### ===== 部署产物（大二进制，不入库）=====
+deploy/release-final/
+deploy/release-v1.3.0/
+deploy/*.zip
+deploy/*.tgz
+
+### ===== 本地临时文件 =====
+app-run*.log
+boot.*.log
+req.json
+tmp_*.sql
+tmp_*.csv
+batch*.csv
+login.json
+
+### ===== 本地媒体与备份 =====
+*.bak
+*.bak-*
+

@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.trace.product.mapper.ProductCodeMapper">
+
+    <insert id="insertBatch">
+        INSERT INTO product_code
+            (product_id, code, code_type, batch_no, qr_image_url,
+             scan_limit, scan_count, void_scan_count, over_limit_scan_count,
+             first_scan_time, last_scan_time,
+             status, deleted, create_time, update_time)
+        VALUES
+        <foreach collection="list" item="item" separator=",">
+            (#{item.productId}, #{item.code}, #{item.codeType}, #{item.batchNo}, #{item.qrImageUrl},
+             #{item.scanLimit}, #{item.scanCount},
+             IFNULL(#{item.voidScanCount}, 0), IFNULL(#{item.overLimitScanCount}, 0),
+             #{item.firstScanTime}, #{item.lastScanTime},
+             #{item.status}, 0, NOW(), NOW())
+        </foreach>
+    </insert>
+
+    <select id="selectPageWithProduct" resultType="com.trace.product.dto.CodeWithProductVO">
+        SELECT
+            c.id, c.product_id AS productId, c.code, c.code_type AS codeType,
+            c.batch_no AS batchNo, c.qr_image_url AS qrImageUrl,
+            c.scan_limit AS scanLimit, c.scan_count AS scanCount,
+            c.void_scan_count AS voidScanCount,
+            c.over_limit_scan_count AS overLimitScanCount,
+            c.first_scan_time AS firstScanTime, c.last_scan_time AS lastScanTime,
+            c.status, c.create_time AS createTime,
+            p.product_no AS productNo, p.product_name AS productName,
+            p.category, p.brand, p.spec
+        FROM product_code c
+        LEFT JOIN product p ON p.id = c.product_id AND p.deleted = 0
+        <where>
+            c.deleted = 0
+            <if test="codeType != null">AND c.code_type = #{codeType}</if>
+            <if test="productId != null">AND c.product_id = #{productId}</if>
+            <if test="batchNo != null and batchNo != ''">AND c.batch_no LIKE CONCAT('%', #{batchNo}, '%')</if>
+            <if test="status != null">AND c.status = #{status}</if>
+            <if test="keyword != null and keyword != ''">
+                AND (
+                    c.code LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.product_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.product_name LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.category LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.brand LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.spec LIKE CONCAT('%', #{keyword}, '%')
+                )
+            </if>
+        </where>
+        ORDER BY c.id DESC
+        LIMIT #{offset}, #{size}
+    </select>
+
+    <select id="countWithProduct" resultType="long">
+        SELECT COUNT(*)
+        FROM product_code c
+        LEFT JOIN product p ON p.id = c.product_id AND p.deleted = 0
+        <where>
+            c.deleted = 0
+            <if test="codeType != null">AND c.code_type = #{codeType}</if>
+            <if test="productId != null">AND c.product_id = #{productId}</if>
+            <if test="batchNo != null and batchNo != ''">AND c.batch_no LIKE CONCAT('%', #{batchNo}, '%')</if>
+            <if test="status != null">AND c.status = #{status}</if>
+            <if test="keyword != null and keyword != ''">
+                AND (
+                    c.code LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.product_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.product_name LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.category LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.brand LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.spec LIKE CONCAT('%', #{keyword}, '%')
+                )
+            </if>
+        </where>
+    </select>
+
+</mapper>

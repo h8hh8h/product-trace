@@ -1,0 +1,56 @@
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/product_trace?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: product_trace
+    password: ${DB_PASSWORD:changeme}
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      password: ${REDIS_PASSWORD:}
+      database: 0
+      timeout: 5000
+      lettuce:
+        pool:
+          max-active: 32
+          max-idle: 16
+          min-idle: 4
+
+# 生产环境关闭 SQL 日志
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+# 生产：本地存储走 Nginx 直接访问（见 deploy/nginx/full-stack.conf 的 /upload/ 映射）
+# 实际生效配置以数据库 sys_storage_config 为准（后台「存储配置」页面维护）
+media:
+  storage:
+    type: local
+    local:
+      # 文件实际落盘目录（必须与 Nginx location /upload/ 的 alias 一致）
+      root-path: /www/wwwroot/product-trace/upload
+      # 相对前缀 /upload：后台与 H5 站点都配置了 location /upload/，前后端同域即可直出
+      url-prefix: /upload
+
+# 防伪阈值：覆盖 application.yml，一物一码生成时写入 product_code.scan_limit
+trace:
+  anti-fake:
+    # 一物一码单码扫码上限：第 limit+1 次扫码触发假货预警
+    default-scan-limit: ${ANTI_FAKE_SCAN_LIMIT:3}
+  # 一物一码 CSV 中的 H5 短链前缀（印刷厂二维码内容）
+  h5:
+    scan-base-url: https://h5.yourdomain.com/scan
+
+# 微信公众号（H5 微信内自定义分享，可选，通过宝塔进程守护环境变量注入）
+wx:
+  mp:
+    app-id: ${WX_MP_APP_ID:}
+    app-secret: ${WX_MP_APP_SECRET:}
+
+logging:
+  level:
+    com.trace.product: warn
+  file:
+    # 生产日志落盘，供宝塔进程守护/运维排查（Spring Boot 默认单文件 10MB 轮转，保留 7 天）
+    name: /www/wwwroot/product-trace/logs/product-trace.log

@@ -1,0 +1,816 @@
+# 宝塔面板私有化部署手册
+
+> 项目名称：产品数字化展示与一物一码溯源系统
+> 文档版本：v1.0（阶段四交付）
+> 适用对象：运维工程师 / 实施工程师
+> 部署方式：宝塔面板 + Linux 原生环境（**不使用 Docker**）
+> 后端形态：Spring Boot 3.2.5 可执行 `product-trace.jar`（JDK 17）
+
+---
+
+## 0. 部署架构与目录规划
+
+### 0.1 请求链路
+
+```
+微信扫码（小程序码） ──► 微信小程序 ──► https://api.yourdomain.com/api/...
+浏览器 / 普通二维码 ──► H5 站点 https://h5.yourdomain.com ──► /api/ 跨域 ──► API 站点
+
+                         ┌──────────────────────────────────────────┐
+  api.yourdomain.com ──► │ Nginx（宝塔）                             │
+                         │  /api/        → 127.0.0.1:8080 (Java)     │
+                         │  /uploads/images/  → 本地静态 + WebP 协商  │
+                         │  /uploads/videos/  → 本地静态 + 防盗链     │
+                         └───────────────┬──────────────────────────┘
+                                         │
+                         ┌───────────────▼──────────────────────────┐
+                         │ MySQL 8.0 / 5.7   Redis 7   FFmpeg/cwebp  │
+                         └──────────────────────────────────────────┘
+```
+
+### 0.2 端口与域名规划
+
+| 用途 | 地址 | 说明 |
+| --- | --- | --- |
+| 后端服务 | `127.0.0.1:8080` | 仅本机监听，由 Nginx 反代，**不要**在防火墙放行 8080 |
+| API 站点 | `https://api.yourdomain.com` | 反代 `/api/`，并直出 `/uploads/` 媒体文件 |
+| H5 站点 | `https://h5.yourdomain.com` | Uni-app H5 静态文件 + history 路由 |
+| 后台站点（后续阶段） | `https://admin.yourdomain.com` | Vue3 + Element Plus 控制台 |
+| MySQL | `127.0.0.1:3306` | 数据库 `product_trace` |
+| Redis | `127.0.0.1:6379` | 需设置密码，禁止公网访问 |
+
+> 所有域名必须已完成 **ICP 备案**（微信小程序服务器域名强制要求），并解析到本服务器公网 IP。
+
+### 0.3 服务器目录规划（本手册统一使用）
+
+| 目录 | 用途 | 属主 |
+| --- | --- | --- |
+| `/www/wwwroot/product-trace/backend/` | 后端 jar、`.env`、启动脚本 | `www` |
+| `/www/wwwroot/product-trace/logs/` | 应用日志 `product-trace.log` | `www` |
+| `/www/wwwroot/product-trace/h5/dist/` | H5 编译产物 | `www` |
+| `/www/wwwroot/product-trace/deploy/` | 建表脚本、Nginx 配置备份 | `www` |
+| `/www/wwwroot/media/uploads/images/` | 产品图片（含 `.webp`） | `www` |
+| `/www/wwwroot/media/uploads/videos/` | 产品视频（H.264 MP4） | `www` |
+| `/www/wwwroot/media/uploads/qrcode/` | 小程序码图片 | `www` |
+| `/www/wwwroot/media/uploads/csv/` | 一物一码 CSV（**Nginx 已禁止公网直链**） | `www` |
+
+> 关键对应关系：后端 `media.storage.local.root-path = /www/wwwroot/media/uploads`，Nginx `root /www/wwwroot/media`，对外 URL `/uploads/images/...`。三者必须一致，否则图片/视频 404。
+
+---
+
+## 1. 环境准备
+
+### 1.1 服务器规格建议
+
+| 项目 | 最低 | 推荐 |
+| --- | --- | --- |
+| CPU | 2 核 | 4 核 |
+| 内存 | 2 GB | 4 GB 及以上（Java 1GB + MySQL 1GB + Redis 256MB） |
+| 磁盘 | 40 GB | 100 GB 起（视频占用较大） |
+| 系统 | CentOS 7.9 / Ubuntu 20.04+ | CentOS Stream 9 / Ubuntu 22.04 |
+
+> 视频转码是 CPU 密集型操作，若上传频繁，建议 4 核以上。
+
+### 1.2 安装宝塔面板
+
+1. 使用 SSH 登录服务器（`root`）。
+2. 打开宝塔官网 <https://www.bt.cn/new/download.html>，复制**当前最新**的安装命令执行（不同系统命令不同，以下为示例形式，请以官网为准）：
+
+```bash
+# CentOS / Rocky / AlmaLinux 示例
+yum install -y wget curl
+curl -sSO https://download.bt.cn/install/install_panel.sh && bash install_panel.sh
+```
+
+```bash
+# Ubuntu / Debian 示例
+apt update && apt install -y wget curl
+curl -sSO https://download.bt.cn/install/install_panel.sh && bash install_panel.sh
+```
+
+3. 安装完成后终端会输出面板地址、用户名、密码，**立即保存**。
+4. 浏览器打开面板地址，登录后完成「推荐安装」：选择 **LNMP**（Nginx + MySQL + PHP 可不装 PHP，仅需 Nginx/MySQL）。
+
+### 1.3 安装运行环境（软件商店）
+
+进入 **软件商店**，安装并确认版本：
+
+| 软件 | 版本要求 | 说明 |
+| --- | --- | --- |
+| Nginx | 1.22 及以上 | 需含 `http_mp4_module`（宝塔默认包含） |
+| MySQL | 5.7.40 或 8.0 | 推荐 8.0，字符集 `utf8mb4` |
+| Redis | 6.x / 7.x | 用于限流、扫码计数、批量进度、缓存 |
+| Java项目管理器 | 最新版 | 用于部署 jar 与守护进程（也可用 systemd） |
+| FFmpeg | 4.x 及以上 | 本地视频转码（后端会调用 `ffmpeg`/`ffprobe`） |
+| libwebp（cwebp） | 1.x | 上传时生成 WebP 副本 |
+
+> **FFmpeg 与 cwebp 是硬性依赖**：未安装 FFmpeg 时视频不会被转码为可拖动的 MP4；未安装 cwebp 时不会生成 WebP，但原图仍可正常访问（自动降级）。
+
+### 1.4 安装 JDK 17（二选一）
+
+**方式 A（推荐）：宝塔 Java 项目管理器安装**
+
+1. 软件商店搜索「Java项目管理器」→ 安装。
+2. 打开插件 → **设置 / JDK管理** → 安装 **JDK 1.17**。
+3. 记录 JDK 路径（通常为 `/www/server/java/jdk-17.x.x`）。
+
+**方式 B：SSH 手动安装（Adoptium Temurin）**
+
+```bash
+mkdir -p /usr/local/java && cd /usr/local/java
+# 从 https://adoptium.net/temurin/releases/?version=17 获取最新 Linux x64 tar.gz 链接
+wget -O jdk17.tar.gz "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.x%2Bx/OpenJDK17U-jdk_x64_linux_hotspot_17.0.x_x.tar.gz"
+tar -zxvf jdk17.tar.gz
+ln -sfn /usr/local/java/jdk-17* /usr/local/java/current
+
+cat > /etc/profile.d/java17.sh <<'EOF'
+export JAVA_HOME=/usr/local/java/current
+export PATH=$JAVA_HOME/bin:$PATH
+EOF
+chmod +x /etc/profile.d/java17.sh
+source /etc/profile.d/java17.sh
+java -version
+```
+
+期望输出包含 `openjdk version "17.x.x"`。
+
+> 若使用 Ubuntu 且只求快速上线：`apt install -y openjdk-17-jdk`；CentOS 8+/Rocky：`dnf install -y java-17-openjdk-devel`。
+
+### 1.5 安装 FFmpeg 与 cwebp
+
+**CentOS / Rocky / AlmaLinux（静态包，最稳）**
+
+```bash
+cd /usr/local
+wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+tar -xJf ffmpeg-release-amd64-static.tar.xz
+mv ffmpeg-*-amd64-static /usr/local/ffmpeg
+ln -sf /usr/local/ffmpeg/ffmpeg  /usr/bin/ffmpeg
+ln -sf /usr/local/ffmpeg/ffprobe /usr/bin/ffprobe
+
+# WebP 工具
+yum install -y epel-release
+yum install -y libwebp-tools
+
+# 验证
+ffmpeg -version | head -n 1
+ffprobe -version | head -n 1
+cwebp -version
+```
+
+**Ubuntu / Debian**
+
+```bash
+apt update
+apt install -y ffmpeg webp
+ffmpeg -version | head -n 1
+cwebp -version
+```
+
+> 如果 `cwebp` 命令不存在，后端上传图片时会跳过 WebP 转换（仅告警，不影响业务），但图片会以原图返回。
+
+### 1.6 创建目录与权限
+
+```bash
+mkdir -p /www/wwwroot/product-trace/{backend,logs,deploy}
+mkdir -p /www/wwwroot/product-trace/h5/dist
+mkdir -p /www/wwwroot/media/uploads/{images,videos,qrcode,csv}
+
+chown -R www:www /www/wwwroot/product-trace /www/wwwroot/media
+chmod -R 755 /www/wwwroot/product-trace /www/wwwroot/media
+```
+
+> 后端将以 `www` 用户运行（或宝塔 Java 项目的默认用户），必须对 `/www/wwwroot/media/uploads` 有写权限，否则上传报「创建存储目录失败」。
+
+---
+
+## 2. Java 后端部署
+
+### 2.1 本地打包可执行 jar
+
+在开发机（需 Maven 3.8+、JDK 17）：
+
+```bash
+cd product-trace
+mvn clean package -DskipTests
+```
+
+产物：`target/product-trace.jar`（已内嵌全部依赖与启动类，可直接 `java -jar`）。
+
+确认方式：
+
+```bash
+java -jar target/product-trace.jar --spring.profiles.active=dev
+# 或检查清单文件
+unzip -p target/product-trace.jar META-INF/MANIFEST.MF | grep -E "Main-Class|Start-Class"
+```
+
+> `Start-Class` 应为 `com.trace.product.ProductTraceApplication`。
+
+### 2.2 上传 jar
+
+宝塔 → **文件** → 进入 `/www/wwwroot/product-trace/backend/` → 上传 `product-trace.jar`。
+
+同时创建环境变量文件 `/www/wwwroot/product-trace/backend/.env`（**不要提交到代码仓库**）：
+
+```bash
+SPRING_PROFILES_ACTIVE=prod
+DB_PASSWORD=YourDbPassword
+REDIS_PASSWORD=YourRedisPassword
+WX_MINIAPP_APP_ID=wx1234567890abcdef
+WX_MINIAPP_APP_SECRET=your_miniapp_secret
+WX_MP_APP_ID=wxabcdef1234567890
+WX_MP_APP_SECRET=your_mp_secret
+ANTI_FAKE_SCAN_LIMIT=3
+JAVA_OPTS=-Xms512m -Xmx1024m -XX:+UseG1GC -Dfile.encoding=UTF-8
+```
+
+```bash
+chown www:www /www/wwwroot/product-trace/backend/.env
+chmod 600 /www/wwwroot/product-trace/backend/.env
+```
+
+### 2.3 方式 A：宝塔「Java项目管理器」部署
+
+1. **软件商店 → Java项目管理器 → 打开**。
+2. 点击 **添加Java项目**，项目类型选择 **Spring Boot**。
+3. 按下表填写：
+
+| 配置项 | 填写值 |
+| --- | --- |
+| 项目名称 | `product-trace` |
+| 项目端口 | `8080` |
+| 项目JDK | `JDK 1.17` |
+| 项目路径 | `/www/wwwroot/product-trace/backend` |
+| jar 文件 | `product-trace.jar` |
+| 启动参数 / JVM参数 | `-Xms512m -Xmx1024m -XX:+UseG1GC -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8` |
+| 运行用户 | `www` |
+| 开机自启 | **开启** |
+| 守护进程 | **开启**（异常退出自动拉起） |
+
+4. 若面板版本支持「环境变量」，逐条添加 `.env` 中的键值；若不支持，可在「自定义启动命令」中显式指定（注意密码会出现在进程列表中，建议优先使用 systemd 方式）：
+
+```
+java -Xms512m -Xmx1024m -XX:+UseG1GC -Dfile.encoding=UTF-8 -jar product-trace.jar --spring.profiles.active=prod
+```
+
+5. 点击 **启动**，状态变为「运行中」。
+6. 查看插件日志，确认出现 `Tomcat started on port 8080` 与 `Started ProductTraceApplication`。
+
+### 2.4 方式 B：systemd 部署（推荐，环境变量更安全）
+
+创建 `/etc/systemd/system/product-trace.service`：
+
+```ini
+[Unit]
+Description=Product Trace Backend
+After=network.target mysql.service redis.service
+
+[Service]
+Type=simple
+User=www
+Group=www
+WorkingDirectory=/www/wwwroot/product-trace/backend
+EnvironmentFile=/www/wwwroot/product-trace/backend/.env
+ExecStart=/usr/local/java/current/bin/java -Xms512m -Xmx1024m -XX:+UseG1GC -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8 -jar /www/wwwroot/product-trace/backend/product-trace.jar
+SuccessExitStatus=143
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload
+systemctl enable --now product-trace
+systemctl status product-trace --no-pager
+journalctl -u product-trace -n 100 --no-pager
+```
+
+> JDK 路径按实际安装修改：`/www/server/java/jdk-17.x.x/bin/java` 或 `/usr/local/java/current/bin/java`。
+
+### 2.5 启动参数说明
+
+| 参数 | 作用 | 建议 |
+| --- | --- | --- |
+| `-Xms512m` | 堆初始值 | 与 `-Xmx` 接近可减少扩容抖动 |
+| `-Xmx1024m` | 堆上限 | 4GB 内存机器用 1024m；8GB 可给 2048m |
+| `-XX:+UseG1GC` | 垃圾回收器 | 低延迟，适合 Web 服务 |
+| `-XX:MaxMetaspaceSize=256m` | 元空间上限 | 防止类加载泄漏导致内存上涨 |
+| `-Dfile.encoding=UTF-8` | 文件编码 | 防止 CSV/日志中文乱码 |
+
+> 内存不足时优先保证 `-Xmx` 生效：若服务器仅 2GB，请设为 `-Xms256m -Xmx512m`，并给 MySQL 限制 `innodb_buffer_pool_size`（例如 256M）。
+
+### 2.6 启动验证
+
+```bash
+# 1. 端口是否监听（应为 0.0.0.0:8080 或 127.0.0.1:8080）
+ss -lntp | grep 8080
+
+# 2. 健康检查（注意 context-path 为 /api）
+curl -s http://127.0.0.1:8080/api/health
+
+# 3. 数据库建表校验（5 张表应全部为 OK）
+curl -s http://127.0.0.1:8080/api/health/db
+```
+
+期望返回示例：
+
+```json
+{"code":200,"message":"操作成功","data":{"status":"UP","service":"product-trace",
+"mediaStorageType":"local","imageStrategy":"LocalStorageStrategy",
+"videoStrategy":"LocalVideoStrategy"}}
+```
+
+### 2.7 日志位置
+
+| 日志 | 路径 |
+| --- | --- |
+| 应用日志 | `/www/wwwroot/product-trace/logs/product-trace.log`（`application-prod.yml` 已配置） |
+| systemd 日志 | `journalctl -u product-trace` |
+| 宝塔 Java 项目日志 | Java项目管理器 → 项目 → 日志 |
+| Nginx 访问日志 | `/www/wwwlogs/api.yourdomain.com.log` |
+| Nginx 错误日志 | `/www/wwwlogs/api.yourdomain.com.error.log` |
+
+---
+
+## 3. 数据库与缓存
+
+### 3.1 创建 MySQL 数据库
+
+宝塔 → **数据库** → **添加数据库**：
+
+| 配置项 | 值 |
+| --- | --- |
+| 数据库名 | `product_trace` |
+| 用户名 | `product_trace` |
+| 密码 | 强密码（记录到 `.env` 的 `DB_PASSWORD`） |
+| 字符集 | `utf8mb4` |
+| 访问权限 | 本地服务器（localhost） |
+
+若需命令行创建：
+
+```sql
+CREATE DATABASE `product_trace` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'product_trace'@'localhost' IDENTIFIED BY 'YourDbPassword';
+GRANT ALL PRIVILEGES ON `product_trace`.* TO 'product_trace'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+### 3.2 导入建表脚本
+
+将 `deploy/schema.sql` 上传到 `/www/wwwroot/product-trace/deploy/`。
+
+**方式 A：phpMyAdmin（推荐给运维）**
+
+1. 宝塔 → 数据库 → 对应库右侧 **管理**（打开 phpMyAdmin）。
+2. 选择左侧 `product_trace` 库 → **导入** → 选择 `schema.sql` → 执行。
+
+**方式 B：命令行**
+
+```bash
+# 脚本内含 CREATE DATABASE / USE 语句，建议用 root 执行一次
+mysql -uroot -p < /www/wwwroot/product-trace/deploy/schema.sql
+
+# 若应用账号无建库权限，可先删除脚本头部的 CREATE DATABASE / USE 两行，再用应用账号导入
+mysql -uproduct_trace -p product_trace < /www/wwwroot/product-trace/deploy/schema.sql
+```
+
+> ⚠️ **脚本包含 `DROP TABLE IF EXISTS`**，仅可用于首次初始化。生产库已有数据时**严禁**重复执行。
+
+### 3.3 验证表结构与初始账号
+
+```sql
+USE product_trace;
+SHOW TABLES;
+-- 应包含：sys_admin、product、product_code、scan_record、media_file
+
+SELECT id, username, nickname, role, status FROM sys_admin;
+```
+
+默认管理员：`admin / admin123`（`sys_admin` 中的 BCrypt 占位密码）。**首次登录后必须修改密码**，正式上线前建议直接执行：
+
+```sql
+UPDATE sys_admin SET password = '<新的 BCrypt 值>' WHERE username = 'admin';
+```
+
+### 3.4 配置 Redis 密码
+
+宝塔 → **软件商店 → Redis → 设置 → 配置修改**，修改并保存：
+
+```conf
+bind 127.0.0.1
+protected-mode yes
+port 6379
+requirepass YourRedisPassword
+maxmemory 256mb
+maxmemory-policy noeviction
+```
+
+```bash
+# 重启 Redis
+/etc/init.d/redis restart     # 或 systemctl restart redis
+
+# 验证
+redis-cli -h 127.0.0.1 -p 6379 -a 'YourRedisPassword' ping
+# 期望：PONG
+```
+
+> `maxmemory-policy noeviction`：限流与扫码计数 key 依赖 Redis，若使用 `allkeys-lru`，内存满时可能淘汰限流 key，导致限流被绕过。请保证 `maxmemory` 足够并监控内存。
+
+### 3.5 修改后端配置
+
+生产配置位于 `src/main/resources/application-prod.yml`（打包进 jar），修改后需**重新打包**；也可通过环境变量/启动参数覆盖而无需重新打包。
+
+| 配置项 | 默认值/占位 | 生产应设置为 | 覆盖方式 |
+| --- | --- | --- | --- |
+| `spring.profiles.active` | `dev` | `prod` | 环境变量 `SPRING_PROFILES_ACTIVE=prod` |
+| `spring.datasource.url` | `jdbc:mysql://127.0.0.1:3306/product_trace...` | 按实际库名修改 | 改配置文件 |
+| `spring.datasource.username` | `product_trace` | 按实际创建的用户 | 改配置文件 |
+| `spring.datasource.password` | `${DB_PASSWORD:changeme}` | 数据库密码 | 环境变量 `DB_PASSWORD` |
+| `spring.data.redis.password` | `${REDIS_PASSWORD:}` | Redis 密码 | 环境变量 `REDIS_PASSWORD` |
+| `media.storage.type` | `local` | `local`（切换云端再改 `oss`/`vod`） | 改配置文件 |
+| `media.storage.local.root-path` | `/www/wwwroot/media/uploads` | 保持不变 | 改配置文件 |
+| `media.storage.local.url-prefix` | `https://api.yourdomain.com/uploads` | 替换为真实域名 | 改配置文件 |
+| `trace.h5.scan-base-url` | `https://h5.yourdomain.com/scan` | 替换为真实 H5 域名 | 改配置文件 |
+| `trace.anti-fake.default-scan-limit` | `3` | 按业务设定 | 环境变量 `ANTI_FAKE_SCAN_LIMIT` |
+| `trace.rate-limit.verify.limit/window` | `30 / 60` | 按业务设定 | 改配置文件 |
+| `wx.miniapp.app-id/app-secret` | 空 | 小程序 AppID/Secret | 环境变量 `WX_MINIAPP_APP_ID/SECRET` |
+| `wx.mp.app-id/app-secret` | 空 | 公众号 AppID/Secret | 环境变量 `WX_MP_APP_ID/SECRET` |
+| `logging.file.name` | `/www/wwwroot/product-trace/logs/product-trace.log` | 保持不变 | 改配置文件 |
+
+> 域名替换清单（一次性全量替换）：`api.yourdomain.com`、`h5.yourdomain.com`、`admin.yourdomain.com`。
+> 修改 `application-prod.yml` 后重新执行 `mvn clean package -DskipTests` 并替换 jar；仅改环境变量时重启服务即可。
+
+### 3.6 验证数据库/缓存联动
+
+```bash
+# 建表校验
+curl -s http://127.0.0.1:8080/api/health/db
+
+# 查看 Redis 中的业务 key（触发一次扫码后）
+redis-cli -a 'YourRedisPassword' --scan --pattern 'trace:code:*'
+redis-cli -a 'YourRedisPassword' --scan --pattern 'rate:verify:ip:*'
+```
+
+---
+
+## 4. Nginx 配置与 HTTPS
+
+### 4.1 新建 API 站点
+
+宝塔 → **网站 → 添加站点**：
+
+| 配置项 | 值 |
+| --- | --- |
+| 域名 | `api.yourdomain.com` |
+| 根目录 | `/www/wwwroot/media`（用于直出媒体文件） |
+| FTP / 数据库 | 不创建 |
+| PHP 版本 | 纯静态 |
+
+### 4.2 替换站点配置
+
+1. 网站列表 → `api.yourdomain.com` → **设置 → 配置文件**。
+2. 打开项目中的 `deploy/nginx/bt_nginx_api.conf`，**全选复制**，替换站点配置文件的全部内容。
+3. 将文件中的占位域名/证书路径替换为真实值：
+
+| 占位 | 替换为 |
+| --- | --- |
+| `api.yourdomain.com` | 实际 API 域名 |
+| `h5.yourdomain.com` | 实际 H5 域名 |
+| `*.yourdomain.com` | 实际主域名 |
+| `/www/server/panel/vhost/cert/api.yourdomain.com/fullchain.pem` | 实际证书路径 |
+
+4. 保存前点击「配置检查」或在 SSH 执行：
+
+```bash
+nginx -t
+# 期望：syntax is ok / test is successful
+nginx -s reload
+```
+
+> 配置中的 `map` 块必须位于 `server` 之外（本文件已按宝塔 include 到 `http` 上下文编写）。若复制时把 `map` 放进 `server`，`nginx -t` 会报 `"map" directive is not allowed here`。
+
+### 4.3 关键配置解读
+
+| 区块 | 作用 | 注意 |
+| --- | --- | --- |
+| `map $http_origin $trace_cors_origin` | CORS 白名单 | 新增前端域名时在此追加一行 `"~^https://new.yourdomain\.com$"` |
+| `location /api/` | 反代 `127.0.0.1:8080` | 保留 `/api` 前缀（`proxy_pass` 不带路径） |
+| `proxy_set_header X-Forwarded-For $remote_addr` | 覆盖真实 IP | **不要**改成 `$proxy_add_x_forwarded_for`，否则客户端可伪造 IP 绕过限流 |
+| `location /uploads/images/` | WebP 协商 + 30 天缓存 | `try_files $uri$trace_webp_suffix $uri` |
+| `location /uploads/videos/` | Referer 防盗链 + mp4 拖动 | 白名单含 `none`，保证小程序/播放器可访问 |
+| `location ^~ /uploads/csv/` | 禁止 CSV 公网直链 | 仅允许后端下载接口 |
+| `client_max_body_size 500m` | 上传大小 | 与 Spring `max-file-size` 一致 |
+
+### 4.4 申请与部署 SSL 证书
+
+**方式 A：宝塔免费证书（Let's Encrypt）**
+
+1. 网站 → `api.yourdomain.com` → **设置 → SSL → Let's Encrypt**。
+2. 勾选域名 → 申请。要求：域名已解析到本机、80 端口可访问（验证期间不要拦截 80）。
+3. 申请成功后点击 **强制 HTTPS**。
+4. 证书路径确认：
+
+```bash
+ls -l /www/server/panel/vhost/cert/api.yourdomain.com/
+# fullchain.pem  privkey.pem
+```
+
+**方式 B：商业证书**
+
+1. 将 `fullchain.pem`、`privkey.pem` 上传到 `/www/server/panel/vhost/cert/api.yourdomain.com/`。
+2. 或使用宝塔 **SSL → 其他证书** 粘贴内容，保存后确认配置中的 `ssl_certificate` 路径一致。
+
+**H5 站点同理**：`h5.yourdomain.com` 在 SSL 中单独申请，`h5.conf` 中的证书路径需同步修改。
+
+> 证书到期前 30 天宝塔会自动续签（需保持 80 端口可访问）。可在 **计划任务** 中增加「SSL 自动续签」提醒。
+
+### 4.5 验证 Nginx 配置生效
+
+```bash
+# 1. mp4 模块是否存在（可选，缺失时可删除配置中的 mp4 指令）
+nginx -V 2>&1 | tr ' ' '\n' | grep -E 'http_mp4_module|http_image_filter_module'
+
+# 2. 健康检查经反代
+curl -sI https://api.yourdomain.com/api/health
+
+# 3. CORS 预检（应返回 204 且带 Access-Control-Allow-Origin）
+curl -i -X OPTIONS https://api.yourdomain.com/api/verify/TEST \
+  -H "Origin: https://h5.yourdomain.com" \
+  -H "Access-Control-Request-Method: GET"
+
+# 4. 图片 WebP 协商（需先上传一张 jpg）
+curl -sI -H "Accept: image/webp" https://api.yourdomain.com/uploads/images/2026/10/21/xxx.jpg
+
+# 5. 视频 Range（应返回 206 Partial Content）
+curl -sI -H "Range: bytes=0-1023" https://api.yourdomain.com/uploads/videos/2026/10/21/xxx.mp4
+
+# 6. 视频防盗链（外部 Referer 应返回 403）
+curl -sI -H "Referer: https://evil.example.com/" \
+  https://api.yourdomain.com/uploads/videos/2026/10/21/xxx.mp4
+```
+
+### 4.6 媒体目录权限与 WebP
+
+```bash
+# 权限
+chown -R www:www /www/wwwroot/media
+find /www/wwwroot/media -type d -exec chmod 755 {} \;
+find /www/wwwroot/media -type f -exec chmod 644 {} \;
+
+# 历史图片批量补 WebP（上传时已自动生成新图，此脚本用于存量）
+bash /www/wwwroot/product-trace/deploy/nginx/convert-webp.sh
+```
+
+> `cwebp` 需要对目录有写权限，建议用 `www` 用户执行：`su -s /bin/bash www -c 'bash /path/convert-webp.sh'`。
+
+---
+
+## 5. 前端 H5 部署
+
+### 5.1 打包前修改接口地址
+
+编辑 `frontend-uniapp/common/config.js`：
+
+```js
+// 生产环境
+const DEFAULT_BASE_URL = 'https://api.yourdomain.com/api'
+```
+
+若 H5 与 API 同域（使用 `h5.conf` 中的 `/api/` 反代），也可写为 `https://h5.yourdomain.com/api`，可完全避免跨域。
+
+### 5.2 HBuilderX 打包
+
+1. HBuilderX 导入 `frontend-uniapp`。
+2. **发行 → 网站-PC Web 或手机 H5**。
+3. 网站标题 `产品溯源`，网站域名 `https://h5.yourdomain.com`，基础路径 `/`。
+4. 产物目录：`frontend-uniapp/unpackage/dist/build/h5/`（CLI 为 `dist/build/h5/`）。
+
+详细步骤与检查项见项目内 `deploy/h5-build-guide.md`。
+
+### 5.3 上传到宝塔
+
+目标目录：
+
+```
+/www/wwwroot/product-trace/h5/dist/
+├── index.html
+├── assets/
+└── static/
+```
+
+> 注意：**不要**多套一层目录。正确为 `.../dist/index.html`；错误为 `.../dist/h5/index.html`（会 404）。
+
+```bash
+chown -R www:www /www/wwwroot/product-trace/h5
+chmod -R 755 /www/wwwroot/product-trace/h5
+```
+
+### 5.4 绑定域名与配置
+
+1. 宝塔 → 网站 → 添加站点：`h5.yourdomain.com`，根目录 `/www/wwwroot/product-trace/h5/dist`，纯静态。
+2. 申请 SSL 并开启强制 HTTPS。
+3. 设置 → 配置文件 → 将 `deploy/nginx/h5.conf` 中 `server` 内容合并进去（或整体替换，注意证书路径）。
+4. 关键点（history 路由与 `/p/123` 扫码短链）：
+
+```nginx
+location / {
+    try_files $uri $uri/ /index.html;
+    add_header Cache-Control "no-cache";
+}
+```
+
+5. 若 H5 与 API 不同域且 `h5.conf` 中的 `/api/` 反代与 API 站点共存，请确认 `proxy_pass` 指向 `http://127.0.0.1:8080/api/`（带 `/api/`）。
+
+### 5.5 验证
+
+```bash
+curl -sI https://h5.yourdomain.com/            # 200
+curl -sI https://h5.yourdomain.com/p/1         # 200（回退 index.html）
+```
+
+浏览器验证：
+
+1. 打开 `https://h5.yourdomain.com/p/1`，能看到骨架屏 → 产品详情。
+2. 刷新页面不出现 404。
+3. F12 → Network：`/api/product/1` 200；图片 `Vary: Accept`；视频 `206`。
+4. 微信内打开，右上角「···」分享，标题与封面正确（需配置公众号 JS-SDK，见 6.4）。
+
+---
+
+## 6. 微信小程序配置
+
+### 6.1 填写 AppID
+
+| 位置 | 配置项 | 值 |
+| --- | --- | --- |
+| `frontend-uniapp/manifest.json` | `mp-weixin.appid` | 小程序 AppID |
+| 后端环境变量 | `WX_MINIAPP_APP_ID` / `WX_MINIAPP_APP_SECRET` | 小程序 AppID / AppSecret |
+| 后端环境变量 | `WX_MP_APP_ID` / `WX_MP_APP_SECRET` | **公众号** AppID / AppSecret（H5 分享用，与小程序不同） |
+
+> `wxacode.getUnlimited` 生成的码归属于 AppID，因此小程序码与小程序 AppID 必须一致，否则扫码无法打开对应小程序。
+> 本地未配置时可设置 `wx.miniapp.mock=true` 生成占位二维码联调，**生产必须为 false**（`application-prod.yml` 已固定为 false）。
+
+### 6.2 配置服务器域名白名单（必须）
+
+小程序只能请求已配置的 HTTPS 域名，且要求：
+
+- 域名已完成 **ICP 备案**；
+- 已部署有效 SSL 证书；
+- 使用 **443** 端口；
+- 不能使用 IP、不能带端口号或路径；
+- 域名修改次数有限（以平台提示为准）。
+
+**操作路径**：登录 <https://mp.weixin.qq.com> → **开发 → 开发管理 → 开发设置 → 服务器域名**。
+
+| 类型 | 填写 |
+| --- | --- |
+| request 合法域名 | `https://api.yourdomain.com` |
+| uploadFile 合法域名 | `https://api.yourdomain.com` |
+| downloadFile 合法域名 | `https://api.yourdomain.com` |
+
+填写后保存（可能需要管理员扫码确认），等待几分钟生效。
+
+> `downloadFile` 用于 `<video>` / 图片等媒体资源；只配 `request` 时视频可能无法播放。
+> 小程序码中的 `page` 为 `pages/product/detail`，`scene` 为 `productId={id}`（`check_path=false`，页面需在已发布版本中存在）。
+
+### 6.3 配置业务域名（可选）
+
+若在小程序内使用 `web-view` 打开 H5（本系统当前未使用），需在 **开发设置 → 业务域名** 添加 `h5.yourdomain.com`，并按提示上传校验文件到 H5 站点根目录。
+
+### 6.4 配置公众号 JS 接口安全域名（H5 分享）
+
+H5 在微信内自定义分享依赖公众号 JS-SDK：
+
+1. 公众号后台 → **设置与开发 → 公众号设置 → 功能设置**。
+2. **JS接口安全域名** 填写 `h5.yourdomain.com`（不含 `https://`，无需路径）。
+3. **IP白名单** 填写服务器公网出口 IP（获取 access_token 需要）。
+4. 按页面提示下载 `MP_verify_xxx.txt`，上传到 `/www/wwwroot/product-trace/h5/dist/` 根目录，确保可访问：
+
+```bash
+curl -sI https://h5.yourdomain.com/MP_verify_xxx.txt
+```
+
+5. 公众号需为**已认证的服务号**才具备分享接口权限。
+
+> 未配置公众号时，`/api/wx/jssdk-config` 会返回明确提示，H5 浏览与防伪验证不受影响，仅自定义分享不生效。
+
+### 6.5 小程序上传与发布
+
+1. HBuilderX → **发行 → 小程序-微信**，产物在 `unpackage/dist/build/mp-weixin/`。
+2. 微信开发者工具导入该目录，确认 `AppID` 正确。
+3. **详情 → 本地设置**：正式版需勾选「不校验合法域名」**取消**（发布前关闭），确保接口走真实域名。
+4. 工具内 **上传** → 填写版本号与备注。
+5. 公众平台 → **版本管理 → 开发版本 → 提交审核** → 审核通过后 **发布**。
+6. 审核期间可用「体验版」扫码测试；正式发布后用户扫小程序码即进入对应产品页。
+
+---
+
+## 7. 上线验收清单
+
+| # | 检查项 | 命令 / 操作 | 期望结果 |
+| --- | --- | --- | --- |
+| 1 | 后端进程 | `ss -lntp \| grep 8080` | 有监听 |
+| 2 | 健康检查 | `curl -s https://api.yourdomain.com/api/health` | `"status":"UP"` |
+| 3 | 建表校验 | `curl -s https://api.yourdomain.com/api/health/db` | `"allTablesReady":true` |
+| 4 | MySQL | `mysql -uproduct_trace -p -e 'select 1'` | 正常返回 |
+| 5 | Redis | `redis-cli -a 密码 ping` | `PONG` |
+| 6 | FFmpeg | `ffmpeg -version` | 有版本号 |
+| 7 | cwebp | `cwebp -version` | 有版本号 |
+| 8 | HTTPS | 浏览器访问 API 域名 | 证书有效、无混合内容 |
+| 9 | CORS | 浏览器 F12 预检 | 204 + `Access-Control-Allow-Origin` |
+| 10 | 图片 | 访问一张已上传图片 | 200，含 `Vary: Accept` |
+| 11 | 视频 | 播放并拖动进度条 | 206，可拖动 |
+| 12 | 防盗链 | 外部 Referer 请求视频 | 403 |
+| 13 | 普通码 | 后台生成小程序码并扫码 | 进入产品详情 |
+| 14 | 一物一码 | 批量生成 → 下载 CSV → 扫一条 | 显示正品提示 |
+| 15 | 防伪预警 | 同一码扫第 4 次（阈值 3） | 红色假货预警 |
+| 16 | 限流 | 1 分钟内请求 `/api/verify/xxx` 31 次 | 第 31 次返回 429 |
+| 17 | H5 短链 | 访问 `/p/1` 并刷新 | 200，不 404 |
+| 18 | 小程序 | 真机扫码 | 正常打开、分享卡片正确 |
+| 19 | 日志 | `tail -f /www/wwwroot/product-trace/logs/product-trace.log` | 有正常业务日志、无异常堆栈 |
+| 20 | 开机自启 | 重启服务器 | 服务自动恢复 |
+
+---
+
+## 8. 附录
+
+### 8.1 环境变量清单
+
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `SPRING_PROFILES_ACTIVE` | 是 | 固定 `prod` |
+| `DB_PASSWORD` | 是 | MySQL 密码 |
+| `REDIS_PASSWORD` | 是 | Redis 密码 |
+| `WX_MINIAPP_APP_ID` | 生产必填 | 小程序 AppID |
+| `WX_MINIAPP_APP_SECRET` | 生产必填 | 小程序 AppSecret |
+| `WX_MP_APP_ID` | 分享功能必填 | 公众号 AppID |
+| `WX_MP_APP_SECRET` | 分享功能必填 | 公众号 AppSecret |
+| `ANTI_FAKE_SCAN_LIMIT` | 否 | 一物一码默认扫码上限，默认 3 |
+
+### 8.2 服务管理命令
+
+```bash
+# systemd 方式
+systemctl start|stop|restart|status product-trace
+journalctl -u product-trace -f
+
+# 宝塔 Java 项目管理器方式
+# 在面板「Java项目管理器」中启动/停止，或：
+ps -ef | grep product-trace
+kill -15 <pid>
+```
+
+### 8.3 升级与回滚
+
+**升级后端**
+
+```bash
+cd /www/wwwroot/product-trace/backend
+cp product-trace.jar product-trace.jar.bak_$(date +%Y%m%d%H%M)
+# 上传新 jar 覆盖 product-trace.jar 后
+chown www:www product-trace.jar
+systemctl restart product-trace       # 或面板中重启
+curl -s http://127.0.0.1:8080/api/health
+```
+
+**回滚后端**：停服 → 用备份 jar 覆盖 → 启动 → 健康检查。
+
+**回滚 H5**
+
+```bash
+cd /www/wwwroot/product-trace/h5
+mv dist dist_failed_$(date +%Y%m%d%H%M)
+mv dist_bak_YYYYMMDDHHMM dist
+chown -R www:www dist
+# 静态文件替换无需 reload Nginx
+```
+
+**数据库备份（建议每日计划任务）**
+
+```bash
+mysqldump -uproduct_trace -p'密码' --single-transaction --routines product_trace \
+  | gzip > /www/backup/product_trace_$(date +%F).sql.gz
+```
+
+> 媒体目录 `/www/wwwroot/media` 也需纳入备份（图片/视频/CSV），建议宝塔计划任务每周全量 + 每日增量。
+
+### 8.4 常用文件清单
+
+| 文件 | 说明 |
+| --- | --- |
+| `deploy/schema.sql` | 建表脚本（首次初始化） |
+| `deploy/nginx/bt_nginx_api.conf` | API 站点完整配置 |
+| `deploy/nginx/h5.conf` | H5 站点配置 |
+| `deploy/nginx/convert-webp.sh` | 存量图片批量转 WebP |
+| `deploy/h5-build-guide.md` | H5 打包与上传详细指引 |
+| `postman/P1~P4.postman_collection.json` | 各阶段接口测试集合 |
+| `docs/02-系统后台使用手册.md` | 后台操作手册（交付客户） |
+| `docs/03-运维与故障排查手册.md` | 故障排查手册（交付运维） |
+
+---
+
+**文档结束** · 如部署环境与本文不一致（如使用 Ubuntu、自定义目录），请以实际路径为准并同步更新 `.env` 与 Nginx `root`。

@@ -1,0 +1,28 @@
+-- 迁移开发环境遗留的媒体地址（从本地开发库导数据到生产库时才需要执行）
+-- 使用前：把 https://api.你的域名.com 替换为真实域名
+-- 背景：开发库里的图片地址是 http://127.0.0.1:8080/api/media/...，部署到服务器后外网无法访问，
+--       表现为产品图裂图、浏览器控制台报 ORB 拦截。
+
+UPDATE product
+SET cover_image = REPLACE(cover_image, 'http://127.0.0.1:8080/api/media', 'https://api.你的域名.com/upload')
+WHERE cover_image LIKE 'http://127.0.0.1:8080/api/media%';
+
+UPDATE product
+SET image_list = REPLACE(image_list, 'http://127.0.0.1:8080/api/media', 'https://api.你的域名.com/upload')
+WHERE image_list LIKE '%http://127.0.0.1:8080/api/media%';
+
+UPDATE product
+SET description = REPLACE(description, 'http://127.0.0.1:8080/api/media', 'https://api.你的域名.com/upload')
+WHERE description LIKE '%http://127.0.0.1:8080/api/media%';
+
+UPDATE product
+SET video_url = REPLACE(video_url, 'http://127.0.0.1:8080/api/media', 'https://api.你的域名.com/upload')
+WHERE video_url LIKE '%http://127.0.0.1:8080/api/media%';
+
+UPDATE product_code
+SET qr_image_url = REPLACE(qr_image_url, 'http://127.0.0.1:8080/api/media', 'https://api.你的域名.com/upload')
+WHERE qr_image_url LIKE '%http://127.0.0.1:8080/api/media%';
+
+-- 验证：以下两条应返回 0
+SELECT COUNT(*) AS product_left FROM product WHERE cover_image LIKE '%127.0.0.1%' OR image_list LIKE '%127.0.0.1%' OR description LIKE '%127.0.0.1%';
+SELECT COUNT(*) AS code_left FROM product_code WHERE qr_image_url LIKE '%127.0.0.1%';

@@ -1,0 +1,229 @@
+{
+  "info": {
+    "name": "产品溯源系统 - P3 用户端页面支撑接口",
+    "description": "阶段三：公开产品详情、防伪验证（正品/假货预警/限流）、微信 JS-SDK 签名。执行前先启动 MySQL/Redis/后端，并把 code 变量设为 P2 生成的真实码值。\n\n重置扫码次数：redis-cli DEL trace:code:scan:<code>，并把 product_code.scan_count 置 0。\n重置限流窗口：redis-cli DEL rate:verify:ip:127.0.0.1。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8080/api" },
+    { "key": "productId", "value": "1" },
+    { "key": "code", "value": "" },
+    { "key": "h5Url", "value": "http://127.0.0.1:5173/p/1" }
+  ],
+  "item": [
+    {
+      "name": "1. 公开产品详情（H5/小程序详情页数据源）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "pm.test('HTTP 200', () => pm.expect(pm.response.code).to.eql(200));",
+              "pm.test('业务码 200', () => pm.expect(json.code).to.eql(200));",
+              "pm.test('返回产品名称', () => pm.expect(json.data.productName).to.be.a('string'));",
+              "pm.test('返回轮播图字段', () => pm.expect(json.data).to.have.property('imageList'));",
+              "pm.test('返回富文本字段', () => pm.expect(json.data).to.have.property('description'));",
+              "if (json.data && json.data.id) {",
+              "  pm.collectionVariables.set('productId', json.data.id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/product/{{productId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["product", "{{productId}}"]
+        }
+      }
+    },
+    {
+      "name": "2. 公开产品详情 - 产品不存在（应返回 404）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "pm.test('业务码 404', () => pm.expect(json.code).to.eql(404));",
+              "pm.test('提示产品不存在', () => pm.expect(json.message).to.include('不存在'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/product/999999",
+          "host": ["{{baseUrl}}"],
+          "path": ["product", "999999"]
+        }
+      }
+    },
+    {
+      "name": "3. 防伪验证 - 单次扫码（正品 / 已超限）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "pm.test('HTTP 200', () => pm.expect(pm.response.code).to.eql(200));",
+              "pm.test('返回业务码 200 或 1004', () => pm.expect([200, 1004]).to.include(json.code));",
+              "if (json.data) {",
+              "  pm.test('包含扫码次数与上限', () => {",
+              "    pm.expect(json.data).to.have.property('scanCount');",
+              "    pm.expect(json.data).to.have.property('scanLimit');",
+              "  });",
+              "  console.log('scanCount =', json.data.scanCount, '/', json.data.scanLimit, 'message =', json.data.message);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/verify/{{code}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["verify", "{{code}}"]
+        }
+      }
+    },
+    {
+      "name": "4. 防伪验证 - 连续扫码触发假货预警（1004）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const baseUrl = pm.variables.get('baseUrl');",
+              "const code = pm.variables.get('code');",
+              "const maxTry = 10;",
+              "let tries = 0;",
+              "pm.test('code 变量已填写', () => pm.expect(code, '请先把集合变量 code 设为真实码值').to.not.be.empty);",
+              "function hit() {",
+              "  pm.sendRequest({ url: baseUrl + '/verify/' + encodeURIComponent(code), method: 'GET' }, (err, res) => {",
+              "    tries++;",
+              "    const json = res.json();",
+              "    if (json.code === 1004) {",
+              "      pm.test('触发假货预警 code=1004', () => pm.expect(json.code).to.eql(1004));",
+              "      pm.test('fakeWarning=true', () => pm.expect(json.data.fakeWarning).to.eql(true));",
+              "      pm.test('返回预警文案', () => pm.expect(json.data.message).to.be.a('string').and.not.empty);",
+              "      console.log('第 ' + tries + ' 次触发预警：' + json.data.message);",
+              "      return;",
+              "    }",
+              "    if (tries >= maxTry) {",
+              "      pm.test('触发假货预警 code=1004', () => {",
+              "        throw new Error('连续 ' + maxTry + ' 次未触发，最后返回 code=' + json.code + '，请重置 Redis 计数');",
+              "      });",
+              "      return;",
+              "    }",
+              "    hit();",
+              "  });",
+              "}",
+              "hit();"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/verify/{{code}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["verify", "{{code}}"]
+        }
+      }
+    },
+    {
+      "name": "5. IP 限流 - 连续 31 次应返回 429",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const baseUrl = pm.variables.get('baseUrl');",
+              "const code = pm.variables.get('code') || 'rate-limit-probe';",
+              "const max = 31;",
+              "let done = 0;",
+              "let hit429 = false;",
+              "pm.test('code 变量已填写', () => pm.expect(code).to.not.be.empty);",
+              "function fire() {",
+              "  pm.sendRequest({ url: baseUrl + '/verify/' + encodeURIComponent(code), method: 'GET' }, (err, res) => {",
+              "    done++;",
+              "    if (res.code === 429) hit429 = true;",
+              "    if (done >= max) {",
+              "      pm.test('第 31 次返回 HTTP 429', () => pm.expect(hit429).to.eql(true));",
+              "      console.log('累计请求 ' + done + ' 次，是否出现 429：' + hit429);",
+              "      return;",
+              "    }",
+              "    fire();",
+              "  });",
+              "}",
+              "fire();"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/verify/{{code}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["verify", "{{code}}"]
+        }
+      }
+    },
+    {
+      "name": "6. 微信 JS-SDK 签名（H5 自定义分享）",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "pm.test('HTTP 200', () => pm.expect(pm.response.code).to.eql(200));",
+              "if (json.code === 200) {",
+              "  pm.test('返回签名四要素', () => {",
+              "    pm.expect(json.data).to.have.property('appId');",
+              "    pm.expect(json.data).to.have.property('timestamp');",
+              "    pm.expect(json.data).to.have.property('nonceStr');",
+              "    pm.expect(json.data).to.have.property('signature');",
+              "  });",
+              "  console.log('签名成功，appId =', json.data.appId);",
+              "} else {",
+              "  pm.test('未配置公众号时应返回明确提示', () => pm.expect(json.message).to.include('未配置'));",
+              "  console.log('未配置公众号：' + json.message);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/wx/jssdk-config?url={{h5Url}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["wx", "jssdk-config"],
+          "query": [{ "key": "url", "value": "{{h5Url}}" }]
+        }
+      }
+    }
+  ]
+}

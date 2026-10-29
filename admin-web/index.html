@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 全局不发送 Referer：绕过 1688/阿里 OSS 等图床的 Referer 防盗链。
+         注意：Element Plus 的 el-image 组件（2.14.7）不支持 referrerpolicy prop，
+         属性只会落在根 div 上对内部 img 无效，因此必须靠此 meta 全局生效。 -->
+    <meta name="referrer" content="no-referrer" />
+    <title>产品溯源管理后台</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
